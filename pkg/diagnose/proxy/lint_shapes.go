@@ -17,6 +17,7 @@ func lintURLShapes(eff Effective) []Finding {
 				Severity:    SeverityYellow,
 				Description: "Proxy https is not a valid URL (missing scheme/host or parse failed).",
 				Action:      "Provide a full URL, e.g. http://proxy.company:3128",
+				DocURL:      "https://docs.datadoghq.com/agent/configuration/proxy/",
 				Evidence:    v,
 			})
 		} else if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
@@ -25,6 +26,7 @@ func lintURLShapes(eff Effective) []Finding {
 				Severity:    SeverityYellow,
 				Description: "Proxy https uses a non-standard scheme.",
 				Action:      "Use http:// or https:// unless you explicitly support the scheme.",
+				DocURL:      "https://docs.datadoghq.com/agent/configuration/proxy/",
 				Evidence:    v,
 			})
 		}
@@ -39,6 +41,7 @@ func lintURLShapes(eff Effective) []Finding {
 				Severity:    SeverityYellow,
 				Description: "Proxy http is not a valid URL (missing scheme/host or parse failed).",
 				Action:      "Provide a full URL, e.g. http://proxy.company:3128",
+				DocURL:      "https://docs.datadoghq.com/agent/configuration/proxy/",
 				Evidence:    v,
 			})
 		} else if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
@@ -47,6 +50,7 @@ func lintURLShapes(eff Effective) []Finding {
 				Severity:    SeverityYellow,
 				Description: "Proxy http uses a non-standard scheme.",
 				Action:      "Use http:// or https:// unless you explicitly support the scheme.",
+				DocURL:      "https://docs.datadoghq.com/agent/configuration/proxy/",
 				Evidence:    v,
 			})
 		}

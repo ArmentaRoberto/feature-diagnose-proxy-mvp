@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,7 +39,7 @@ func TestRun_JSON_EndpointMatrixPresentEvenWhenEmpty(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "")
 	t.Setenv("NO_PROXY", "")
 
-	res := Run(true)
+	res := Run(Options{NoNetwork: true})
 
 	raw, err := json.Marshal(res)
 	if err != nil {
@@ -80,7 +81,7 @@ func TestRun_Lints_UnknownScheme(t *testing.T) {
 	useEmptyConfig(t)
 	t.Setenv("DD_PROXY_HTTPS", "socks5://corp-proxy:1080")
 
-	res := Run(true) // config-only
+	res := Run(Options{NoNetwork: true}) // config-only
 	if !hasFinding("proxy.https.unknown_scheme", res.Findings) {
 		raw, _ := json.MarshalIndent(res, "", "  ")
 		t.Fatalf("expected finding proxy.https.unknown_scheme; got:\n%s", string(raw))
@@ -95,9 +96,22 @@ func TestRun_Lints_ConflictDDvsStd(t *testing.T) {
 	t.Setenv("DD_PROXY_HTTPS", "http://dd:443")
 	t.Setenv("HTTPS_PROXY", "http://std:8443")
 
-	res := Run(true)
+	res := Run(Options{NoNetwork: true})
 	if !hasFinding("proxy.https.conflict", res.Findings) {
 		raw, _ := json.MarshalIndent(res, "", "  ")
 		t.Fatalf("expected finding proxy.https.conflict; got:\n%s", string(raw))
+	}
+}
+
+func TestFormatSummary_RedactionKeepsScheme(t *testing.T) {
+	res := Result{
+		Effective: Effective{
+			HTTPS: ValueWithSource{Value: "http://user:pass@proxy:3128", Source: SourceStdEnv},
+		},
+	}
+	s := FormatSummary(res)
+	// Accept either raw asterisks or percent-encoded (JSON-style) asterisks
+	if !(strings.Contains(s, "http://****@proxy:3128") || strings.Contains(s, "http://%2A%2A%2A%2A@proxy:3128")) {
+		t.Fatalf("expected redacted URL with scheme and host, got:\n%s", s)
 	}
 }

@@ -2,8 +2,8 @@ package proxy
 
 // Run executes config lints and, if enabled, minimal network probes.
 // - Config lints always run.
-// - When noNetwork == false, we also attempt a TCP dial to the HTTPS proxy.
-func Run(noNetwork bool) Result {
+// - When opts.NoNetwork == false, we also attempt TCP dials to proxies.
+func Run(opts Options) Result {
 	eff := ComputeEffective()
 	findings := []Finding{}
 
@@ -13,7 +13,7 @@ func Run(noNetwork bool) Result {
 	findings = append(findings, lintConflicts(eff)...)
 
 	// Config-only endpoint evaluation (privacy-safe)
-	eps := EffectiveEndpoints()
+	eps, env := EffectiveEndpoints(opts.ExtraEndpoints)
 	matrix := EvaluateNoProxy(eff, eps)
 	if matrix == nil {
 		// ensure endpoint_matrix is always [] in JSON, never null
@@ -32,13 +32,14 @@ func Run(noNetwork bool) Result {
 					"host":     row.Host,
 					"token":    row.Matched,
 				},
+				DocURL: "https://docs.datadoghq.com/agent/configuration/proxy/",
 			})
 		}
 	}
 
-	// Minimal active probe path (off by default)
-	if !noNetwork {
-		findings = append(findings, ProbeProxyConnectivity(eff)...)
+	// Minimal active probes (off by default)
+	if !opts.NoNetwork {
+		findings = append(findings, ProbeProxyConnectivity(eff, opts.Timeout, opts.Retries)...)
 		findings = append(findings, ProbeEndpointsConnectivity(eff, eps)...)
 	}
 
@@ -54,10 +55,15 @@ func Run(noNetwork bool) Result {
 		}
 	}
 
+	confs := CollectConflicts(eff)
+
 	return Result{
+		SchemaVersion:  SchemaVersion,
+		Env:            env,
 		Summary:        summary,
 		Effective:      eff,
 		Findings:       findings,
 		EndpointMatrix: matrix,
+		Conflicts:      confs,
 	}
 }

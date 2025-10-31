@@ -7,10 +7,26 @@ import (
 	configsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 )
 
-// lintConflicts detects conflicting proxy values across dd_env / config / std_env.
+// lintConflicts emits findings for conflicting proxy values across sources.
 func lintConflicts(eff Effective) []Finding {
 	var out []Finding
+	confs := CollectConflicts(eff)
+	for _, c := range confs {
+		key := c.Key
+		out = append(out, Finding{
+			Code:        "proxy." + key + ".conflict",
+			Severity:    SeverityYellow,
+			Description: strings.ToUpper(key) + " proxy is defined by multiple sources with different values.",
+			Action:      "Use a single source or align the values across sources.",
+			Evidence:    c.Values,
+			DocURL:      "https://docs.datadoghq.com/agent/configuration/proxy/",
+		})
+	}
+	return out
+}
 
+// CollectConflicts returns structured conflicts for consumers and inclusion in Result.
+func CollectConflicts(eff Effective) []Conflict {
 	cfg := configsetup.Datadog()
 
 	collect := func(key string) []ValueWithSource {
@@ -75,27 +91,12 @@ func lintConflicts(eff Effective) []Finding {
 		return out
 	}
 
-	// HTTPS
+	out := []Conflict{}
 	if vals := collect("https"); len(vals) > 1 {
-		out = append(out, Finding{
-			Code:        "proxy.https.conflict",
-			Severity:    SeverityYellow,
-			Description: "HTTPS proxy is defined by multiple sources with different values.",
-			Action:      "Use a single source or align the values across sources.",
-			Evidence:    vals,
-		})
+		out = append(out, Conflict{Key: "https", Values: vals})
 	}
-
-	// HTTP
 	if vals := collect("http"); len(vals) > 1 {
-		out = append(out, Finding{
-			Code:        "proxy.http.conflict",
-			Severity:    SeverityYellow,
-			Description: "HTTP proxy is defined by multiple sources with different values.",
-			Action:      "Use a single source or align the values across sources.",
-			Evidence:    vals,
-		})
+		out = append(out, Conflict{Key: "http", Values: vals})
 	}
-
 	return out
 }

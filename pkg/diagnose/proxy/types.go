@@ -35,10 +35,11 @@ type Finding struct {
 	Description string   `json:"description"`
 	Action      string   `json:"action"`
 	Evidence    any      `json:"evidence,omitempty"`
+	DocURL      string   `json:"doc_url,omitempty"`
 }
 
 type Endpoint struct {
-	Name string `json:"name"` // control, logs, apm, process, rc, etc.
+	Name string `json:"name"`
 	URL  string `json:"url"`
 }
 
@@ -55,10 +56,21 @@ type Conflict struct {
 	Values []ValueWithSource `json:"values"`
 }
 
+// EnvironmentInfo summarizes key inputs that influence endpoint resolution.
+type EnvironmentInfo struct {
+	Site  string `json:"site"`
+	DDURL string `json:"dd_url"`
+}
+
+// SchemaVersion is returned with Result so downstream tools can evolve safely.
+const SchemaVersion = "v1"
+
 type Result struct {
-	Summary        Severity        `json:"summary"`
-	Effective      Effective       `json:"effective"`
-	Findings       []Finding       `json:"findings"`
+	SchemaVersion string          `json:"schema_version"`
+	Env           EnvironmentInfo `json:"env"`
+	Summary       Severity        `json:"summary"`
+	Effective     Effective       `json:"effective"`
+	Findings      []Finding       `json:"findings"`
 	EndpointMatrix []EndpointCheck `json:"endpoint_matrix"` // always present (possibly [])
-	Conflicts      []Conflict      `json:"conflicts,omitempty"`
+	Conflicts     []Conflict      `json:"conflicts,omitempty"`
 }

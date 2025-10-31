@@ -4,66 +4,93 @@ import (
 	"context"
 	"net"
 	"net/url"
+	"strings"
 	"time"
 )
 
 // ProbeProxyConnectivity performs a minimal active probe when network checks are enabled.
-// It attempts a TCP connection to the configured HTTPS proxy. If this fails, we report a red finding.
-// This intentionally avoids sending any HTTP CONNECT or TLS handshake in the MVP.
-func ProbeProxyConnectivity(eff Effective) []Finding {
+// It attempts a TCP connection to the configured HTTPS and/or HTTP proxy.
+// If this fails, we report a red finding. This avoids CONNECT/TLS/HTTP in the MVP.
+func ProbeProxyConnectivity(eff Effective, timeout time.Duration, retries int) []Finding {
 	var out []Finding
 
-	// Nothing to probe if no HTTPS proxy is set.
-	if eff.HTTPS.Value == "" {
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	if retries < 0 {
+		retries = 0
+	}
+
+	type target struct {
+		key    string // "https" or "http"
+		rawURL string
+	}
+	var targets []target
+	if eff.HTTPS.Value != "" {
+		targets = append(targets, target{key: "https", rawURL: eff.HTTPS.Value})
+	}
+	if eff.HTTP.Value != "" {
+		targets = append(targets, target{key: "http", rawURL: eff.HTTP.Value})
+	}
+	if len(targets) == 0 {
 		return out
 	}
 
-	u, err := url.Parse(eff.HTTPS.Value)
-	if err != nil || u.Host == "" {
-		// Shape/parse problems are already covered by config lints.
-		return out
-	}
+	for _, t := range targets {
+		u, err := url.Parse(t.rawURL)
+		if err != nil || u.Host == "" {
+			// Shape/parse problems are covered by lints; skip probe for this one.
+			continue
+		}
 
-	// Determine host:port; default ports if missing.
-	target := u.Host
-	if _, _, err := net.SplitHostPort(target); err != nil {
-		switch u.Scheme {
-		case "http":
-			target = net.JoinHostPort(u.Host, "80")
-		case "https":
-			target = net.JoinHostPort(u.Host, "443")
-		default:
-			// Non-standard/unknown schemes are flagged by lints; skip active probe.
-			return out
+		// Determine host:port; default ports if missing.
+		addr := u.Host
+		if _, _, err := net.SplitHostPort(addr); err != nil {
+			switch u.Scheme {
+			case "http":
+				addr = net.JoinHostPort(u.Host, "80")
+			case "https":
+				addr = net.JoinHostPort(u.Host, "443")
+			default:
+				// Non-standard/unknown schemes are flagged by lints; skip active probe.
+				continue
+			}
+		}
+
+		// Fast TCP dial to the proxy, with optional retries.
+		var lastErr error
+		attempts := retries + 1
+		for i := 0; i < attempts; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			d := net.Dialer{}
+			conn, err := d.DialContext(ctx, "tcp", addr)
+			cancel()
+			if err == nil {
+				_ = conn.Close()
+				lastErr = nil
+				break
+			}
+			lastErr = err
+		}
+
+		if lastErr != nil {
+			out = append(out, Finding{
+				Code:        "proxy." + t.key + ".connect_failed",
+				Severity:    SeverityRed,
+				Description: "Failed to connect to the configured " + strings.ToUpper(t.key) + " proxy.",
+				Action:      "Verify host/port, firewall, routing, and that the proxy is reachable.",
+				Evidence: map[string]string{
+					"target": addr,
+					"error":  lastErr.Error(),
+				},
+			})
 		}
 	}
-
-	// Fast TCP dial to the proxy.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	d := net.Dialer{}
-	conn, err := d.DialContext(ctx, "tcp", target)
-	if err != nil {
-		out = append(out, Finding{
-			Code:        "proxy.https.connect_failed",
-			Severity:    SeverityRed,
-			Description: "Failed to connect to the configured HTTPS proxy.",
-			Action:      "Verify host/port, firewall, routing, and that the proxy is reachable.",
-			Evidence: map[string]string{
-				"target": target,
-				"error":  err.Error(),
-			},
-		})
-		return out
-	}
-	_ = conn.Close()
 
 	return out
 }
 
-// ProbeEndpointsConnectivity remains a stub in the MVP.
-// (Future: DNS/TCP/TLS/HTTP probes to each intake when --no-network=false.)
+// Future enhancement: DNS/TCP/TLS/HTTP probes per intake when --no-network=false.
 func ProbeEndpointsConnectivity(_ Effective, _ []Endpoint) []Finding {
 	return nil
 }

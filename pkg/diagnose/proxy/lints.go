@@ -15,6 +15,7 @@ func LintAll(eff Effective) []Finding {
 					Severity:    SeverityYellow,
 					Description: "no_proxy entry starts with a dot (e.g., .example.com). Behavior may differ across environments.",
 					Action:      "Prefer explicit hosts or bare domains (example.com) to avoid ambiguity.",
+					DocURL:      "https://docs.datadoghq.com/agent/configuration/proxy/",
 					Evidence:    tok,
 				})
 				break

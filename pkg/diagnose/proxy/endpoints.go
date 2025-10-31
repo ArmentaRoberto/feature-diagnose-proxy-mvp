@@ -2,16 +2,20 @@ package proxy
 
 import (
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	configsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
+	yaml "gopkg.in/yaml.v2"
 )
 
-// EffectiveEndpoints returns a privacy-safe list of "well-known" endpoints
-// we can evaluate against NO_PROXY rules. Only the host/port are important;
-// URLs are used as convenient carriers.
-func EffectiveEndpoints() []Endpoint {
-	var eps []Endpoint
+// EffectiveEndpoints returns a privacy-safe list of endpoints + basic env info (site, dd_url).
+func EffectiveEndpoints(extras []Endpoint) ([]Endpoint, EnvironmentInfo) {
+	var (
+		eps []Endpoint
+		env EnvironmentInfo
+	)
 
 	cfg := configsetup.Datadog()
 
@@ -19,6 +23,10 @@ func EffectiveEndpoints() []Endpoint {
 	site := "datadoghq.com"
 	if cfg != nil {
 		if s := strings.TrimSpace(cfg.GetString("site")); s != "" {
+			site = s
+		}
+	} else if ddConf := os.Getenv("DD_CONF_DIR"); ddConf != "" {
+		if s, _ := tryLoadSiteFromYAML(ddConf); s != "" {
 			site = s
 		}
 	}
@@ -29,10 +37,17 @@ func EffectiveEndpoints() []Endpoint {
 		if s := strings.TrimSpace(cfg.GetString("dd_url")); s != "" {
 			ddURL = s
 		}
+	} else if ddConf := os.Getenv("DD_CONF_DIR"); ddConf != "" {
+		if _, u := tryLoadSiteFromYAML(ddConf); strings.TrimSpace(u) != "" {
+			ddURL = u
+		}
 	}
+
+	env.Site = site
+	env.DDURL = ddURL
 	eps = append(eps, Endpoint{Name: "core", URL: ddURL})
 
-	// A small curated set of product intakes (hostnames only matter for NO_PROXY).
+	// Curated set of product intakes (hostnames matter for NO_PROXY).
 	host := func(h string) string { return "https://" + h + "." + site }
 	eps = append(eps,
 		Endpoint{Name: "dbm-metrics", URL: host("dbm-metrics-intake")},
@@ -44,14 +59,22 @@ func EffectiveEndpoints() []Endpoint {
 		Endpoint{Name: "sbom", URL: host("sbom-intake")},
 	)
 
-	// Flare support (generic hostname; versioned alias also exists in prod)
+	// Flare support
 	eps = append(eps, Endpoint{Name: "flare", URL: "https://flare.agent." + site})
 
-	return eps
+	// User-supplied extras (best-effort normalization)
+	for _, ex := range extras {
+		u := ex.URL
+		if !strings.Contains(u, "://") {
+			u = "https://" + u
+		}
+		eps = append(eps, Endpoint{Name: ex.Name, URL: u})
+	}
+
+	return eps, env
 }
 
 func splitNoProxyList(s string) []string {
-	// Support comma and/or whitespace separated tokens.
 	out := []string{}
 	f := func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r' }
 	for _, tok := range strings.FieldsFunc(s, f) {
@@ -63,20 +86,84 @@ func splitNoProxyList(s string) []string {
 	return out
 }
 
-func domainMatches(host, suffix string) bool {
-	// exact match or label-boundary suffix match
-	if strings.EqualFold(host, suffix) {
-		return true
+func getDefaultPortForScheme(scheme string) string {
+	switch strings.ToLower(scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
 	}
-	return strings.HasSuffix(strings.ToLower(host), "."+strings.ToLower(suffix))
 }
 
-// EvaluateNoProxy computes a matrix describing which endpoints are bypassed by NO_PROXY.
+func domainMatches(host, suffix string) bool {
+	// exact match or label-boundary suffix match
+	h := strings.ToLower(host)
+	s := strings.ToLower(suffix)
+	if h == s {
+		return true
+	}
+	return strings.HasSuffix(h, "."+s)
+}
+
+func normalizeToken(tok string) string {
+	// trim brackets around IPv6 and spaces; lower for comparison
+	tok = strings.TrimSpace(tok)
+	tok = strings.Trim(tok, "[]")
+	return strings.ToLower(tok)
+}
+
+func tokenMatches(host, port string, tok string, nonExact bool) bool {
+	tok = normalizeToken(tok)
+	hostL := strings.ToLower(host)
+
+	// host:port tokens
+	if h, p, ok := strings.Cut(tok, ":"); ok && p != "" {
+		h = strings.Trim(h, "[]")
+		if hostL == h || domainMatches(hostL, h) {
+			return port == p
+		}
+		return false
+	}
+	// wildcard
+	if tok == "*" {
+		return true
+	}
+	// leading dot => domain+subdomains
+	if strings.HasPrefix(tok, ".") {
+		return domainMatches(hostL, strings.TrimPrefix(tok, "."))
+	}
+	// exact hostname
+	if hostL == tok {
+		return true
+	}
+	// optional substring mode (non-exact)
+	if nonExact && strings.Contains(hostL, tok) {
+		return true
+	}
+	return false
+}
+
+// EvaluateNoProxy computes which endpoints are bypassed by NO_PROXY.
 func EvaluateNoProxy(eff Effective, eps []Endpoint) []EndpointCheck {
 	matrix := make([]EndpointCheck, 0, len(eps))
 
 	noProxy := strings.TrimSpace(eff.NoProxy.Value)
-	tokens := splitNoProxyList(noProxy)
+	rawTokens := splitNoProxyList(noProxy)
+	// normalize & de-duplicate tokens
+	tokens := make([]string, 0, len(rawTokens))
+	seen := map[string]struct{}{}
+	for _, t := range rawTokens {
+		n := normalizeToken(t)
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; !ok {
+			seen[n] = struct{}{}
+			tokens = append(tokens, n)
+		}
+	}
 
 	for _, ep := range eps {
 		u, err := url.Parse(ep.URL)
@@ -85,6 +172,9 @@ func EvaluateNoProxy(eff Effective, eps []Endpoint) []EndpointCheck {
 		}
 		host := u.Hostname()
 		port := u.Port()
+		if port == "" {
+			port = getDefaultPortForScheme(u.Scheme)
+		}
 
 		check := EndpointCheck{
 			Endpoint: ep,
@@ -95,33 +185,10 @@ func EvaluateNoProxy(eff Effective, eps []Endpoint) []EndpointCheck {
 		}
 
 		for _, t := range tokens {
-			t = strings.TrimSpace(t)
-			if t == "" {
-				continue
-			}
-			if t == "*" {
+			if tokenMatches(host, port, t, eff.NonExactNoProxy) {
 				check.Bypassed = true
 				check.Matched = t
 				break
-			}
-			if strings.HasPrefix(t, ".") {
-				if domainMatches(host, strings.TrimPrefix(t, ".")) {
-					check.Bypassed = true
-					check.Matched = t
-					break
-				}
-			} else {
-				// exact hostname or (if allowed) substring fallback
-				if strings.EqualFold(host, t) {
-					check.Bypassed = true
-					check.Matched = t
-					break
-				}
-				if eff.NonExactNoProxy && strings.Contains(strings.ToLower(host), strings.ToLower(t)) {
-					check.Bypassed = true
-					check.Matched = t
-					break
-				}
 			}
 		}
 
@@ -129,4 +196,26 @@ func EvaluateNoProxy(eff Effective, eps []Endpoint) []EndpointCheck {
 	}
 
 	return matrix
+}
+
+// minimal YAML shape for site/dd_url fallback from datadog.yaml
+type ddSiteYAML struct {
+	Site  string `yaml:"site"`
+	DDURL string `yaml:"dd_url"`
+}
+
+func tryLoadSiteFromYAML(confDir string) (site, ddurl string) {
+	if strings.TrimSpace(confDir) == "" {
+		return "", ""
+	}
+	path := filepath.Join(confDir, "datadog.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+	var doc ddSiteYAML
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return "", ""
+	}
+	return doc.Site, doc.DDURL
 }

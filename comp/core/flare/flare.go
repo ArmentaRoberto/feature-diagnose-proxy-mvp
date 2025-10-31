@@ -84,6 +84,7 @@ func newFlare(deps dependencies) provides {
 		f.providers,
 		types.NewFiller(f.collectLogsFiles),
 		types.NewFiller(f.collectConfigFiles),
+		types.NewFiller(f.collectProxyDiagnose),
 	)
 
 	return provides{

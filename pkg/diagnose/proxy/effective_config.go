@@ -28,13 +28,16 @@ func joinNoProxySlice(slice []string) string {
 	return strings.Join(slice, ",")
 }
 
-// minimal YAML shape to read proxy.* from datadog.yaml directly when needed
+// minimal YAML shape to read proxy.* and site/dd_url from datadog.yaml directly when needed
 type ddYAML struct {
 	Proxy struct {
-		HTTP    string   `yaml:"http"`
-		HTTPS   string   `yaml:"https"`
-		NoProxy []string `yaml:"no_proxy"`
+		HTTP            string   `yaml:"http"`
+		HTTPS           string   `yaml:"https"`
+		NoProxy         []string `yaml:"no_proxy"`
+		NoProxyNonExact bool     `yaml:"no_proxy_nonexact_match"`
 	} `yaml:"proxy"`
+	Site  string `yaml:"site"`
+	DDURL string `yaml:"dd_url"`
 }
 
 func tryLoadProxyFromYAML(confDir string) (http, https string, np []string, ok bool) {
@@ -75,9 +78,7 @@ func ComputeEffective() Effective {
 		}
 	}
 
-	// 2b) Fallback: if nothing (or partial) came from the in-process config, read datadog.yaml directly.
-	// We honor DD_CONF_DIR (subcommand sets it from -c). This makes -c work even when the parent
-	// command didn't initialize the global config.
+	// 2b) Fallback: read datadog.yaml directly when needed (DD_CONF_DIR honored)
 	if ddConf := os.Getenv("DD_CONF_DIR"); ddConf != "" {
 		if http.Value == "" || https.Value == "" || noProxy.Value == "" {
 			if h, s, np, ok := tryLoadProxyFromYAML(ddConf); ok {
@@ -114,11 +115,23 @@ func ComputeEffective() Effective {
 		NoProxy: noProxy,
 	}
 
-	// Non-exact NO_PROXY toggle (env preferred; allow config if exposed).
+	// Non-exact NO_PROXY toggle (env preferred; canonical config key, fallback to env-style key)
 	if v := os.Getenv("DD_NO_PROXY_NONEXACT_MATCH"); strings.EqualFold(v, "true") {
 		eff.NonExactNoProxy = true
-	} else if cfg != nil && cfg.IsSet("DD_NO_PROXY_NONEXACT_MATCH") {
-		eff.NonExactNoProxy = strings.EqualFold(cfg.GetString("DD_NO_PROXY_NONEXACT_MATCH"), "true")
+	} else if cfg != nil {
+		if cfg.IsSet("proxy.no_proxy_nonexact_match") {
+			eff.NonExactNoProxy = cfg.GetBool("proxy.no_proxy_nonexact_match")
+		} else if cfg.IsSet("DD_NO_PROXY_NONEXACT_MATCH") {
+			eff.NonExactNoProxy = strings.EqualFold(cfg.GetString("DD_NO_PROXY_NONEXACT_MATCH"), "true")
+		}
+	} else if ddConf := os.Getenv("DD_CONF_DIR"); ddConf != "" {
+		path := filepath.Join(ddConf, "datadog.yaml")
+		if data, err := os.ReadFile(path); err == nil {
+			var doc ddYAML
+			if yaml.Unmarshal(data, &doc) == nil {
+				eff.NonExactNoProxy = doc.Proxy.NoProxyNonExact
+			}
+		}
 	}
 
 	return eff
